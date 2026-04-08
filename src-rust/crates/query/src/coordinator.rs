@@ -1,6 +1,12 @@
 //! Coordinator mode: multi-worker agent orchestration
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 pub const COORDINATOR_ENV_VAR: &str = "CLAURST_COORDINATOR_MODE";
+
+/// Thread-safe coordinator mode flag. Replaces direct env-var mutation
+/// which is undefined behavior in multi-threaded programs.
+static COORDINATOR_FLAG: AtomicBool = AtomicBool::new(false);
 
 /// Tools that belong exclusively to the coordinator — not exposed to workers.
 /// Maps to INTERNAL_WORKER_TOOLS in coordinatorMode.ts.
@@ -31,6 +37,10 @@ pub enum AgentMode {
 }
 
 pub fn is_coordinator_mode() -> bool {
+    // Check AtomicBool first (thread-safe), fall back to env var for initial startup
+    if COORDINATOR_FLAG.load(Ordering::Relaxed) {
+        return true;
+    }
     std::env::var(COORDINATOR_ENV_VAR)
         .map(|v| !v.is_empty() && v != "0" && v != "false")
         .unwrap_or(false)
@@ -198,19 +208,10 @@ pub fn match_session_mode(stored_coordinator: bool) -> Option<String> {
         return None;
     }
     if stored_coordinator {
-        // SAFETY: env-var mutation is inherently racy in multi-threaded
-        // programs, but coordinator-mode toggling only happens at session
-        // resume time before any worker threads are spawned.
-        #[allow(unused_unsafe)]
-        unsafe {
-            std::env::set_var(COORDINATOR_ENV_VAR, "1");
-        }
+        COORDINATOR_FLAG.store(true, Ordering::SeqCst);
         Some("Entered coordinator mode to match resumed session.".to_string())
     } else {
-        #[allow(unused_unsafe)]
-        unsafe {
-            std::env::remove_var(COORDINATOR_ENV_VAR);
-        }
+        COORDINATOR_FLAG.store(false, Ordering::SeqCst);
         Some("Exited coordinator mode to match resumed session.".to_string())
     }
 }

@@ -406,6 +406,326 @@ $ARGUMENTS"#,
         allowed_tools: Some(&["CronCreate", "CronList"]),
         user_invocable: true,
     },
+
+    // -----------------------------------------------------------------------
+    // arise
+    // -----------------------------------------------------------------------
+    BundledSkill {
+        name: "arise",
+        description: "Self-improving memory and knowledge system — combines a hierarchical wiki, MemPalace memory architecture, and session-based self-learning.",
+        aliases: &["wiki", "memory-palace"],
+        when_to_use: Some("When starting a new session (wake-up context), when the user wants to bootstrap project knowledge, or when ending a session to extract learnings."),
+        argument_hint: Some("[bootstrap | sync | wake | learn | status]"),
+        prompt_template: r#"# /arise — Self-Improving Memory & Knowledge System
+
+You are the Arise system — a persistent, self-improving knowledge layer that combines
+a hierarchical wiki (.claude/wiki/), a MemPalace memory architecture (.claude/palace/),
+and session-based self-learning. Report in Spanish but keep technical terms in English.
+
+## User Argument
+
+The user invoked `/arise` with this argument (empty means no argument):
+
+$ARGUMENTS
+
+## Phase 0: Detect State
+
+Read the user argument above. Then:
+1. Check if `.claude/wiki/index.md` exists → set `WIKI_EXISTS`
+2. Check if `.claude/palace/wings.json` exists → set `PALACE_EXISTS`
+3. If argument is `wake` → skip to Phase 4
+4. If argument is `learn` → skip to Phase 3
+5. If argument is `status` → show wiki page count, palace wing/room/drawer counts, last sync date from wiki/log.md, then STOP
+6. If argument is `sync` OR both WIKI_EXISTS and PALACE_EXISTS → go to Phase 2
+7. If neither exists OR argument is `bootstrap` OR argument is empty → go to Phase 1
+
+## Phase 1: Bootstrap (New Project)
+
+Ask the user ONE question: **Personal or Laboral?**
+
+### Personal Mode
+Create these wiki files:
+- `.claude/wiki/index.md` — master index linking all pages
+- `.claude/wiki/personal/goals.md` — current goals
+- `.claude/wiki/personal/projects.md` — active projects
+- `.claude/wiki/personal/habits.md` — habits and routines
+- `.claude/wiki/personal/tasks/week-current.md` — this week's tasks
+- `.claude/wiki/personal/journal/` — directory for dated entries
+- `.claude/wiki/log.md` — activity log (source of truth)
+
+Initialize MemPalace:
+- Wing: `personal` with rooms: `goals`, `projects`, `habits`, `tasks`, `journal`
+- Each room starts empty — drawers are added as memories accumulate
+
+### Laboral Mode
+Ask follow-up: project name, team size, key goals (ONE prompt, all questions).
+Create these wiki files:
+- `.claude/wiki/index.md` — master index
+- `.claude/wiki/laboral/org/structure.md` — org chart / team structure
+- `.claude/wiki/laboral/team/members.md` — team members and roles
+- `.claude/wiki/laboral/projects/active.md` — active projects
+- `.claude/wiki/laboral/prd/template.md` — PRD template
+- `.claude/wiki/laboral/transcripts/` — directory for meeting notes
+- `.claude/wiki/laboral/decisions/log.md` — decision log (ADR-style)
+- `.claude/wiki/log.md` — activity log
+
+Initialize MemPalace:
+- Wing: `laboral` with rooms: `org`, `team`, `projects`, `prd`, `transcripts`, `decisions`
+- Wing: `technical` with rooms: `architecture`, `patterns`, `debt`, `learnings`
+
+After bootstrap, log the event to `wiki/log.md` and confirm to user.
+
+## Phase 2: Sync (Existing Project)
+
+1. **Read all wiki files** — scan `.claude/wiki/` recursively
+2. **Identify gaps** — pages with TODO markers, empty sections, stale dates
+3. **Scan conversation history** — look for decisions, preferences, facts, milestones
+4. **Extract memories** — for each extractable item:
+   - Determine memory_type: `decision`, `preference`, `milestone`, `problem`, `pattern`, `fact`
+   - File as a MemPalace drawer in the appropriate wing/room
+   - If no matching room exists, create one
+5. **Update wiki** — fill gaps with extracted information
+6. **Update index** — ensure `.claude/wiki/index.md` links all pages
+7. **Update knowledge graph** — add entity relationships discovered
+8. **Log sync** to `wiki/log.md` with timestamp and summary
+
+## Phase 3: Self-Learning Loop
+
+Extract from the CURRENT session:
+1. **Decisions made** — what was decided and why
+2. **Preferences revealed** — coding style, tool choices, communication style
+3. **Milestones reached** — features completed, bugs fixed, deploys done
+4. **Problems encountered** — errors, blockers, workarounds
+5. **Patterns discovered** — recurring code patterns, architectural choices
+
+For each extracted item:
+- Create a MemPalace drawer with tags: `memory_type`, `confidence`, `session_date`
+- Add to knowledge graph if it involves entity relationships
+- Cross-reference with existing drawers to avoid duplicates
+
+Generate a **learnings summary** and append to `wiki/log.md`:
+```
+## Session: {date}
+### Learnings
+- {bullet list of what was learned}
+### Memories Filed
+- {count} new drawers across {wings touched}
+### Knowledge Graph
+- {new entities and relationships added}
+```
+
+## Phase 4: Wake-Up Context
+
+Load essential context for session start (target: <900 tokens):
+1. Read `wiki/log.md` — last 3 entries for recency
+2. Load MemPalace L0 (identity layer) — who is the user, what is this project
+3. Load MemPalace L1 (essential story) — key decisions, active goals, blockers
+4. Compose a compact context block and present it:
+
+```
+=== ARISE WAKE-UP ===
+Project: {name}
+Mode: {personal|laboral}
+Last session: {date} — {summary}
+Active goals: {list}
+Open blockers: {list}
+Key decisions: {recent decisions}
+=== END WAKE-UP ===
+```
+
+## Phase 5: Continuous Improvement (Background)
+
+These rules apply ALWAYS, not just when /arise is invoked:
+- On every `/compact`: extract memories from expiring context, update wiki
+- On session end: run Phase 3 automatically
+- Knowledge graph grows with each interaction
+- Pattern detection improves entity recognition over time
+- Never delete wiki pages — mark outdated content with ~~strikethrough~~
+- Always update `wiki/log.md` as the source of truth
+- Cross-link related wiki pages and MemPalace wings
+
+## Tools to Use
+
+- **Glob** — for checking file/directory existence and scanning wiki structure (prefer over Bash)
+- **Read** — for loading existing wiki pages and palace state
+- **Write / Edit** — for all wiki markdown files
+- **MemPalace** — for ALL memory operations (init, add_drawer, search, kg_add, extract_memories, get_layers)
+- **Bash** — ONLY for git operations (commit, log, status). Do NOT use Bash for file existence checks.
+- **Agent** — for parallel extraction tasks when syncing large projects
+
+## Autonomy
+
+Minimize user interruptions. The only mandatory questions are:
+1. Bootstrap: "Personal or Laboral?"
+2. Laboral bootstrap: project name, team size, goals (one prompt)
+
+Everything else runs autonomously. Report results, don't ask permission."#,
+        allowed_tools: None,
+        user_invocable: true,
+    },
+
+    // -----------------------------------------------------------------------
+    // karpathy
+    // -----------------------------------------------------------------------
+    BundledSkill {
+        name: "karpathy",
+        description: "Autonomous experimentation loop — systematically optimizes any measurable metric through modify-measure-keep/discard cycles with agent teams.",
+        aliases: &["autoresearch", "experiment"],
+        when_to_use: Some("When the user wants to optimize a metric through systematic experimentation — performance, accuracy, cost, quality, or any measurable target."),
+        argument_hint: Some("<what to optimize>"),
+        prompt_template: r#"# /karpathy — Autonomous Experimentation Loop
+
+You are running an autonomous Karpathy-style experimentation loop. The goal is to
+systematically optimize a measurable metric through iterative experiments.
+
+## User Goal
+
+$ARGUMENTS
+
+> If the User Goal section above is blank, STOP and ask: "What metric or system do you want to optimize?" Do NOT proceed without a clear goal.
+
+## Phase 0: Domain Detection & Setup
+
+Detect the domain from the user's goal:
+- **ml** — model training, accuracy, loss metrics
+- **web** — page speed, bundle size, Core Web Vitals, Lighthouse score
+- **ads** — CTR, conversion rate, CPA, ROAS
+- **code** — build time, test coverage, binary size, memory usage
+- **custom** — user-defined metric with custom measurement
+
+Based on domain, determine:
+1. **Metric to optimize** — the single number to improve (e.g., Lighthouse score)
+2. **Measurement command** — how to measure it (e.g., `lighthouse --output json`)
+3. **Direction** — higher is better or lower is better
+4. **Baseline** — measure the current value before any changes
+
+If the domain or metric is ambiguous, ask the user ONE question to clarify.
+
+## Phase 1: Initialize
+
+1. Create experiment branch: `git checkout -b karpathy/{goal-slug}`
+2. Measure baseline: run measurement command, record result
+3. Initialize tracking files:
+   - `results.tsv` — `experiment_id\tchange\tmetric_before\tmetric_after\tdelta\tkept`
+   - `karpathy_learnings.md` — accumulated insights and patterns
+
+Log baseline to `results.tsv`:
+```
+0\tbaseline\t-\t{baseline_value}\t-\tkept
+```
+
+## Phase 2: Experiment Loop
+
+Repeat until the user stops or the goal is reached:
+
+### Step 1: Hypothesize (Researcher Agent)
+Launch an Agent to:
+- Analyze current state and past experiment results
+- Read `karpathy_learnings.md` for accumulated patterns
+- Propose the SINGLE most promising change to try next
+- Explain the hypothesis: "Changing X should improve metric because Y"
+- Estimate expected improvement
+
+### Step 2: Execute (Executor Agent)
+Launch an Agent to:
+- Implement the proposed change
+- Keep changes minimal and reversible
+- Commit with message: `karpathy: exp-{N} — {description}`
+
+### Step 3: Measure & Decide (Analyst Agent)
+Launch an Agent to:
+- Run the measurement command
+- Compare against previous best
+- Decision:
+  - **KEEP** if metric improved → record in results.tsv, update learnings
+  - **DISCARD** if metric worsened or unchanged → `git revert HEAD --no-edit`, record in results.tsv
+
+### Step 4: Log Results
+Append to `results.tsv`:
+```
+{N}\t{change description}\t{before}\t{after}\t{delta}\t{kept|discarded}
+```
+
+Update `karpathy_learnings.md` with:
+- What was tried
+- What happened
+- Why (hypothesis about the cause)
+- What to try next based on this result
+
+### Step 5: Report (Every 3 Experiments)
+Every 3 experiments, output a progress report:
+```
+=== KARPATHY PROGRESS (Exp {N}) ===
+Metric: {name}
+Baseline: {value}
+Current best: {value} ({improvement}%)
+Experiments: {total} run, {kept} kept, {discarded} discarded
+Last 3:
+  - Exp {N-2}: {description} → {result}
+  - Exp {N-1}: {description} → {result}
+  - Exp {N}:   {description} → {result}
+Top insight: {most useful learning so far}
+=== END PROGRESS ===
+```
+
+## Phase 3: Stall Detection
+
+Track consecutive discards. If **5 consecutive experiments are discarded**:
+
+1. **Strategy Pivot** — the current approach is exhausted
+2. Launch a Researcher Agent to:
+   - Review ALL results.tsv entries
+   - Identify what categories of changes have been tried
+   - Propose a fundamentally different strategy
+   - Update `karpathy_learnings.md` with pivot reasoning
+3. Reset consecutive discard counter
+4. Continue with new strategy
+
+## Phase 4: MemPalace Integration (Optional)
+
+First check if `.claude/palace/wings.json` exists. If it does NOT exist, skip this phase
+and note in the progress report: "Run `/arise bootstrap` to enable MemPalace integration."
+
+If the palace exists, after each experiment:
+- Use the **MemPalace** tool with action `add_drawer`, wing `experiments`, room `{domain}`
+  - Tags: `experiment`, `{kept|discarded}`, `{domain}`, `session_date`
+- If a pattern emerges (3+ similar results), add to knowledge graph:
+  - Entity: the technique/approach
+  - Relationship: `improves`/`degrades` the metric
+  - Confidence: based on consistency of results
+
+After every progress report:
+- Extract meta-patterns and file as `pattern` type drawers
+- Update knowledge graph with technique relationships
+
+## Phase 5: Completion
+
+When the user says stop, or the target is reached:
+1. Output final summary with all results
+2. Commit final state: `karpathy: final — {metric} improved from {baseline} to {best}`
+3. File comprehensive summary as MemPalace drawer
+4. Update `karpathy_learnings.md` with final conclusions
+
+## Agent Team Roles
+
+- **Researcher**: Analyzes data, proposes hypotheses, identifies patterns
+- **Executor**: Implements changes, keeps them minimal and clean
+- **Analyst**: Measures results, makes keep/discard decisions objectively
+
+Launch agents in parallel when possible (e.g., Researcher can start while Analyst logs).
+
+## Rules
+
+1. ONE change per experiment — never bundle multiple changes
+2. Always measure before and after — no guessing
+3. Revert discarded experiments completely — keep the branch clean
+4. Log EVERYTHING to results.tsv — it's the source of truth
+5. Be autonomous — only ask the user if measurement setup is unclear
+6. Report in Spanish but keep metric names and technical terms in English
+7. Never skip measurement — if the measurement command fails, fix it first"#,
+        allowed_tools: None,
+        user_invocable: true,
+    },
 ];
 
 // ---------------------------------------------------------------------------

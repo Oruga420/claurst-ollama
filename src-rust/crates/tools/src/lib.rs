@@ -48,6 +48,7 @@ pub mod synthetic_output;
 pub mod team_tool;
 pub mod remote_trigger;
 pub mod gws_tool;
+pub mod mempalace_tool;
 
 // Re-exports for convenience.
 pub use ask_user::AskUserQuestionTool;
@@ -82,6 +83,7 @@ pub use synthetic_output::SyntheticOutputTool;
 pub use team_tool::{TeamCreateTool, TeamDeleteTool, register_agent_runner, AgentRunFn};
 pub use remote_trigger::RemoteTriggerTool;
 pub use gws_tool::GwsTool;
+pub use mempalace_tool::MemPalaceTool;
 
 // ---------------------------------------------------------------------------
 // Core trait & types
@@ -354,6 +356,7 @@ pub fn all_tools() -> Vec<Box<dyn Tool>> {
         Box::new(SyntheticOutputTool),
         Box::new(McpAuthTool),
         Box::new(RemoteTriggerTool),
+        Box::new(MemPalaceTool),
         // Computer Use is only available when compiled with the feature flag.
         #[cfg(feature = "computer-use")]
         Box::new(computer_use::ComputerUseTool),

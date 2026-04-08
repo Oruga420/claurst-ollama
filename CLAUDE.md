@@ -38,6 +38,25 @@ OLLAMA_ENDPOINT=http://localhost:11434/v1/chat/completions
 CLAUDE_MODEL=gemma4:e2b
 ```
 
+## MemPalace + Self-Learning System
+
+- **MemPalaceTool** (`mempalace_tool.rs`) — Local-first memory palace with wings/rooms/drawers, knowledge graph, 4-layer context, and pattern extraction
+- **`/arise`** skill — Self-improving wiki + memory system (Personal/Laboral modes) that compounds knowledge across sessions
+- **`/karpathy`** skill — Autonomous experimentation loop (modify → measure → keep/discard) with MemPalace integration
+
+### Palace Storage
+
+All memory data lives in `{project}/.claude/palace/`:
+- `wings.json` — Wing index
+- `wings/{name}/{room}/*.json` — Drawer files (verbatim content)
+- `knowledge_graph.json` — Temporal entity triples
+- `identity.txt` — L0 identity layer
+- `learnings.json` — Extracted patterns
+
+### MemPalace Tool Actions
+
+`init`, `add_drawer`, `search`, `list_wings`, `list_rooms`, `status`, `kg_add`, `kg_query`, `kg_invalidate`, `extract_memories`, `get_layers`, `delete_drawer`
+
 ## Docs
 
 - [docs/SETUP.md](docs/SETUP.md) — Install guide (macOS, Linux)
@@ -45,3 +64,4 @@ CLAUDE_MODEL=gemma4:e2b
 - [docs/GWS_TOOL.md](docs/GWS_TOOL.md) — Google Workspace tool
 - [docs/ADDING_TOOLS.md](docs/ADDING_TOOLS.md) — How to add tools
 - [docs/AGENT_GUIDE.md](docs/AGENT_GUIDE.md) — Full guide for AI agents
+- [docs/MEMPALACE.md](docs/MEMPALACE.md) — MemPalace memory system

@@ -487,12 +487,35 @@ pub fn format_compact_summary(raw: &str) -> String {
 /// Return the effective context-window size in tokens for the given model.
 /// These are approximate; the API enforces the real limits server-side.
 pub fn context_window_for_model(model: &str) -> u64 {
+    // Check env var override first (essential for Ollama models with varying context sizes)
+    if let Ok(val) = std::env::var("OLLAMA_CONTEXT_WINDOW") {
+        if let Ok(n) = val.parse::<u64>() {
+            if n > 0 {
+                return n;
+            }
+        }
+    }
+
     if model.contains("opus-4") || model.contains("sonnet-4") || model.contains("haiku-4") {
         200_000
     } else if model.contains("claude-3-5") || model.contains("claude-3.5") {
         200_000
+    } else if model.contains("gemma") {
+        // Gemma 4 models: 32K default context
+        32_000
+    } else if model.contains("qwen") {
+        // Qwen3 models: 32K default context
+        32_000
+    } else if model.contains("llama") {
+        // Llama 3.x: 8K default (some variants support 128K)
+        8_192
+    } else if model.contains("mistral") || model.contains("mixtral") {
+        32_000
+    } else if model.contains("phi") {
+        4_096
     } else {
-        100_000
+        // Conservative default for unknown/local models — better to compact early than overflow
+        8_192
     }
 }
 
