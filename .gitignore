@@ -1,0 +1,11 @@
+target/
+*.exe
+*.dll
+*.so
+*.dylib
+*.rs.bk
+.env
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
