@@ -332,17 +332,145 @@ pub mod client {
     /// Provider selection for API calls.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum Provider {
-        /// Use Anthropic's API
+        /// Anthropic (Claude Opus/Sonnet/Haiku) — native Messages API
         Anthropic,
-        /// Use OpenAI Codex via OAuth
+        /// OpenAI Codex (ChatGPT backend) via OAuth
         Codex,
-        /// Use local Ollama (OpenAI-compatible, supports tool calling)
+        /// Local Ollama (OpenAI-compatible chat completions)
         Ollama,
+        /// OpenAI public API (GPT-*, o1/o3)
+        OpenAI,
+        /// Google Gemini via OpenAI-compatible endpoint
+        Gemini,
+        /// Z.ai / Zhipu GLM (open.bigmodel.cn, OpenAI-compatible)
+        Zai,
+        /// Moonshot Kimi (OpenAI-compatible)
+        Moonshot,
+        /// Alibaba Qwen via DashScope (OpenAI-compatible)
+        Alibaba,
+        /// DeepSeek (OpenAI-compatible)
+        DeepSeek,
     }
 
     impl Default for Provider {
         fn default() -> Self {
             Provider::Anthropic
+        }
+    }
+
+    impl Provider {
+        /// Canonical short name, used for `--provider` flag and settings.
+        pub fn name(&self) -> &'static str {
+            match self {
+                Provider::Anthropic => "anthropic",
+                Provider::Codex => "codex",
+                Provider::Ollama => "ollama",
+                Provider::OpenAI => "openai",
+                Provider::Gemini => "gemini",
+                Provider::Zai => "zai",
+                Provider::Moonshot => "moonshot",
+                Provider::Alibaba => "alibaba",
+                Provider::DeepSeek => "deepseek",
+            }
+        }
+
+        /// Parse provider from CLI flag / settings string. Accepts common aliases.
+        pub fn parse_name(s: &str) -> Option<Provider> {
+            match s.trim().to_lowercase().as_str() {
+                "anthropic" | "claude" => Some(Provider::Anthropic),
+                "codex" => Some(Provider::Codex),
+                "ollama" | "local" => Some(Provider::Ollama),
+                "openai" | "chatgpt" | "gpt" => Some(Provider::OpenAI),
+                "gemini" | "google" => Some(Provider::Gemini),
+                "zai" | "glm" | "zhipu" | "bigmodel" => Some(Provider::Zai),
+                "moonshot" | "kimi" => Some(Provider::Moonshot),
+                "alibaba" | "qwen" | "dashscope" => Some(Provider::Alibaba),
+                "deepseek" => Some(Provider::DeepSeek),
+                _ => None,
+            }
+        }
+
+        /// Auto-detect provider from a model string by prefix.
+        pub fn from_model(model: &str) -> Provider {
+            let m = model.trim().to_lowercase();
+            if m.starts_with("claude") || m.starts_with("anthropic") {
+                Provider::Anthropic
+            } else if m.starts_with("gpt")
+                || m.starts_with("o1")
+                || m.starts_with("o3")
+                || m.starts_with("o4")
+                || m.starts_with("chatgpt")
+            {
+                Provider::OpenAI
+            } else if m.starts_with("gemini") {
+                Provider::Gemini
+            } else if m.starts_with("glm") {
+                Provider::Zai
+            } else if m.starts_with("kimi") || m.starts_with("moonshot") {
+                Provider::Moonshot
+            } else if m.starts_with("qwen") {
+                Provider::Alibaba
+            } else if m.starts_with("deepseek") {
+                Provider::DeepSeek
+            } else {
+                Provider::Anthropic
+            }
+        }
+
+        /// Chat-completions URL for OpenAI-compatible providers. None for
+        /// Anthropic (uses native Messages API) and Ollama (configured via env).
+        pub fn chat_completions_url(&self) -> Option<&'static str> {
+            match self {
+                Provider::OpenAI => Some("https://api.openai.com/v1/chat/completions"),
+                Provider::Gemini => Some(
+                    "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                ),
+                Provider::Zai => {
+                    Some("https://open.bigmodel.cn/api/paas/v4/chat/completions")
+                }
+                Provider::Moonshot => Some("https://api.moonshot.ai/v1/chat/completions"),
+                Provider::Alibaba => Some(
+                    "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+                ),
+                Provider::DeepSeek => Some("https://api.deepseek.com/v1/chat/completions"),
+                _ => None,
+            }
+        }
+
+        /// Preferred env var for this provider's API key.
+        pub fn api_key_env(&self) -> &'static str {
+            match self {
+                Provider::Anthropic => "ANTHROPIC_API_KEY",
+                Provider::Codex => "CODEX_API_KEY",
+                Provider::Ollama => "OLLAMA_API_KEY",
+                Provider::OpenAI => "OPENAI_API_KEY",
+                Provider::Gemini => "GEMINI_API_KEY",
+                Provider::Zai => "ZAI_API_KEY",
+                Provider::Moonshot => "MOONSHOT_API_KEY",
+                Provider::Alibaba => "DASHSCOPE_API_KEY",
+                Provider::DeepSeek => "DEEPSEEK_API_KEY",
+            }
+        }
+
+        /// Default model to use when the user doesn't specify one.
+        pub fn default_model(&self) -> &'static str {
+            match self {
+                Provider::Anthropic => "claude-opus-4-6",
+                Provider::Codex => "gpt-5.2-codex",
+                Provider::Ollama => "qwen3:1.7b",
+                Provider::OpenAI => "gpt-5.2",
+                Provider::Gemini => "gemini-2.5-pro",
+                Provider::Zai => "glm-5.1",
+                Provider::Moonshot => "kimi-k2.5",
+                Provider::Alibaba => "qwen3.5-max",
+                Provider::DeepSeek => "deepseek-v3.2",
+            }
+        }
+
+        /// Whether this provider uses an OpenAI-compatible chat completions endpoint
+        /// that we route through the ollama_adapter translation.
+        pub fn is_openai_compat(&self) -> bool {
+            self.chat_completions_url().is_some()
         }
     }
 
@@ -388,11 +516,14 @@ pub mod client {
     }
 
     impl AnthropicClient {
-        /// Build a new client.  Panics if `config.api_key` is empty.
+        /// Build a new client. Requires a non-empty API key for all cloud
+        /// providers; Ollama is allowed without a key since it's local.
         pub fn new(config: ClientConfig) -> anyhow::Result<Self> {
-            if config.api_key.is_empty() {
+            if config.api_key.is_empty() && config.provider != Provider::Ollama {
                 return Err(anyhow::anyhow!(
-                    "Anthropic API key is required. Set ANTHROPIC_API_KEY or pass --api-key."
+                    "{} API key is required. Set {} or pass --api-key.",
+                    config.provider.name(),
+                    config.provider.api_key_env(),
                 ));
             }
 
@@ -430,6 +561,9 @@ pub mod client {
             }
             if self.config.provider == Provider::Ollama {
                 return self.create_message_ollama(&request).await;
+            }
+            if let Some(url) = self.config.provider.chat_completions_url() {
+                return self.create_message_openai_compat(&request, url).await;
             }
 
             request.stream = false;
@@ -529,6 +663,54 @@ pub mod client {
             ))
         }
 
+        /// Send a request to an OpenAI-compatible provider (OpenAI, Gemini,
+        /// Z.ai/GLM, Moonshot/Kimi, Alibaba/Qwen, DeepSeek). Reuses
+        /// `ollama_adapter` for the format translation since all of these
+        /// providers accept OpenAI chat completions with tool calling.
+        async fn create_message_openai_compat(
+            &self,
+            request: &CreateMessageRequest,
+            endpoint: &str,
+        ) -> Result<CreateMessageResponse, ClaudeError> {
+            let payload = ollama_adapter::anthropic_to_ollama_request(request);
+
+            let resp = self
+                .http
+                .post(endpoint)
+                .header("Authorization", format!("Bearer {}", self.config.api_key))
+                .header("Content-Type", "application/json")
+                .json(&payload)
+                .timeout(self.config.request_timeout)
+                .send()
+                .await
+                .map_err(|e| {
+                    ClaudeError::Other(format!(
+                        "{} request failed: {}",
+                        self.config.provider.name(),
+                        e
+                    ))
+                })?;
+
+            let status = resp.status();
+            let text = resp.text().await.map_err(ClaudeError::Http)?;
+
+            if !status.is_success() {
+                return Err(self.parse_api_error(status.as_u16(), &text));
+            }
+
+            let parsed: Value = serde_json::from_str(&text).map_err(ClaudeError::Json)?;
+            let (content_blocks, stop_reason, input_tokens, output_tokens) =
+                ollama_adapter::parse_ollama_response(&parsed);
+
+            Ok(ollama_adapter::build_anthropic_response(
+                content_blocks,
+                &stop_reason,
+                input_tokens,
+                output_tokens,
+                &request.model,
+            ))
+        }
+
         // ---- Streaming create message ------------------------------------
 
         /// Send a streaming `POST /v1/messages`.  Events are dispatched to the
@@ -539,16 +721,13 @@ pub mod client {
             mut request: CreateMessageRequest,
             handler: Arc<dyn StreamHandler>,
         ) -> Result<mpsc::Receiver<StreamEvent>, ClaudeError> {
-            // Codex and Ollama providers don't support streaming yet
-            if self.config.provider == Provider::Codex {
-                return Err(ClaudeError::Other(
-                    "Codex provider does not support streaming yet".to_string(),
-                ));
-            }
-            if self.config.provider == Provider::Ollama {
-                return Err(ClaudeError::Other(
-                    "Ollama provider does not support streaming yet — use non-streaming mode".to_string(),
-                ));
+            // Only Anthropic supports streaming at the moment. All other
+            // providers fall back to non-streaming via create_message().
+            if self.config.provider != Provider::Anthropic {
+                return Err(ClaudeError::Other(format!(
+                    "{} provider does not support streaming yet — use non-streaming mode",
+                    self.config.provider.name()
+                )));
             }
 
             request.stream = true;
@@ -854,6 +1033,379 @@ pub mod client {
                     None
                 }
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod provider_tests {
+        use super::Provider;
+
+        // ---- parse_name: canonical names ------------------------------------
+
+        #[test]
+        fn parse_name_canonical_anthropic() {
+            assert_eq!(Provider::parse_name("anthropic"), Some(Provider::Anthropic));
+        }
+
+        #[test]
+        fn parse_name_canonical_codex() {
+            assert_eq!(Provider::parse_name("codex"), Some(Provider::Codex));
+        }
+
+        #[test]
+        fn parse_name_canonical_ollama() {
+            assert_eq!(Provider::parse_name("ollama"), Some(Provider::Ollama));
+        }
+
+        #[test]
+        fn parse_name_canonical_openai() {
+            assert_eq!(Provider::parse_name("openai"), Some(Provider::OpenAI));
+        }
+
+        #[test]
+        fn parse_name_canonical_gemini() {
+            assert_eq!(Provider::parse_name("gemini"), Some(Provider::Gemini));
+        }
+
+        #[test]
+        fn parse_name_canonical_zai() {
+            assert_eq!(Provider::parse_name("zai"), Some(Provider::Zai));
+        }
+
+        #[test]
+        fn parse_name_canonical_moonshot() {
+            assert_eq!(Provider::parse_name("moonshot"), Some(Provider::Moonshot));
+        }
+
+        #[test]
+        fn parse_name_canonical_alibaba() {
+            assert_eq!(Provider::parse_name("alibaba"), Some(Provider::Alibaba));
+        }
+
+        #[test]
+        fn parse_name_canonical_deepseek() {
+            assert_eq!(Provider::parse_name("deepseek"), Some(Provider::DeepSeek));
+        }
+
+        // ---- parse_name: aliases -------------------------------------------
+
+        #[test]
+        fn parse_name_alias_claude() {
+            assert_eq!(Provider::parse_name("claude"), Some(Provider::Anthropic));
+        }
+
+        #[test]
+        fn parse_name_alias_local() {
+            assert_eq!(Provider::parse_name("local"), Some(Provider::Ollama));
+        }
+
+        #[test]
+        fn parse_name_alias_chatgpt() {
+            assert_eq!(Provider::parse_name("chatgpt"), Some(Provider::OpenAI));
+        }
+
+        #[test]
+        fn parse_name_alias_gpt() {
+            assert_eq!(Provider::parse_name("gpt"), Some(Provider::OpenAI));
+        }
+
+        #[test]
+        fn parse_name_alias_google() {
+            assert_eq!(Provider::parse_name("google"), Some(Provider::Gemini));
+        }
+
+        #[test]
+        fn parse_name_alias_glm() {
+            assert_eq!(Provider::parse_name("glm"), Some(Provider::Zai));
+        }
+
+        #[test]
+        fn parse_name_alias_zhipu() {
+            assert_eq!(Provider::parse_name("zhipu"), Some(Provider::Zai));
+        }
+
+        #[test]
+        fn parse_name_alias_bigmodel() {
+            assert_eq!(Provider::parse_name("bigmodel"), Some(Provider::Zai));
+        }
+
+        #[test]
+        fn parse_name_alias_kimi() {
+            assert_eq!(Provider::parse_name("kimi"), Some(Provider::Moonshot));
+        }
+
+        #[test]
+        fn parse_name_alias_qwen() {
+            assert_eq!(Provider::parse_name("qwen"), Some(Provider::Alibaba));
+        }
+
+        #[test]
+        fn parse_name_alias_dashscope() {
+            assert_eq!(Provider::parse_name("dashscope"), Some(Provider::Alibaba));
+        }
+
+        // ---- parse_name: case insensitivity and whitespace ------------------
+
+        #[test]
+        fn parse_name_case_insensitive_upper() {
+            assert_eq!(Provider::parse_name("ANTHROPIC"), Some(Provider::Anthropic));
+        }
+
+        #[test]
+        fn parse_name_case_insensitive_mixed() {
+            assert_eq!(Provider::parse_name("DeepSeek"), Some(Provider::DeepSeek));
+        }
+
+        #[test]
+        fn parse_name_trims_whitespace() {
+            assert_eq!(Provider::parse_name("  gemini  "), Some(Provider::Gemini));
+        }
+
+        // ---- parse_name: invalid returns None ------------------------------
+
+        #[test]
+        fn parse_name_invalid_returns_none() {
+            assert_eq!(Provider::parse_name("unknown_provider"), None);
+        }
+
+        #[test]
+        fn parse_name_empty_returns_none() {
+            assert_eq!(Provider::parse_name(""), None);
+        }
+
+        #[test]
+        fn parse_name_whitespace_only_returns_none() {
+            assert_eq!(Provider::parse_name("   "), None);
+        }
+
+        // ---- from_model: one case per provider prefix ----------------------
+
+        #[test]
+        fn from_model_claude_prefix() {
+            assert_eq!(Provider::from_model("claude-3-5-sonnet"), Provider::Anthropic);
+        }
+
+        #[test]
+        fn from_model_anthropic_prefix() {
+            assert_eq!(Provider::from_model("anthropic-model"), Provider::Anthropic);
+        }
+
+        #[test]
+        fn from_model_gpt_prefix() {
+            assert_eq!(Provider::from_model("gpt-4o"), Provider::OpenAI);
+        }
+
+        #[test]
+        fn from_model_o1_prefix() {
+            assert_eq!(Provider::from_model("o1-preview"), Provider::OpenAI);
+        }
+
+        #[test]
+        fn from_model_o3_prefix() {
+            assert_eq!(Provider::from_model("o3-mini"), Provider::OpenAI);
+        }
+
+        #[test]
+        fn from_model_o4_prefix() {
+            assert_eq!(Provider::from_model("o4-mini"), Provider::OpenAI);
+        }
+
+        #[test]
+        fn from_model_chatgpt_prefix() {
+            assert_eq!(Provider::from_model("chatgpt-4o-latest"), Provider::OpenAI);
+        }
+
+        #[test]
+        fn from_model_gemini_prefix() {
+            assert_eq!(Provider::from_model("gemini-2.5-pro"), Provider::Gemini);
+        }
+
+        #[test]
+        fn from_model_glm_prefix() {
+            assert_eq!(Provider::from_model("glm-4-flash"), Provider::Zai);
+        }
+
+        #[test]
+        fn from_model_kimi_prefix() {
+            assert_eq!(Provider::from_model("kimi-k2"), Provider::Moonshot);
+        }
+
+        #[test]
+        fn from_model_moonshot_prefix() {
+            assert_eq!(Provider::from_model("moonshot-v1-8k"), Provider::Moonshot);
+        }
+
+        #[test]
+        fn from_model_qwen_prefix() {
+            assert_eq!(Provider::from_model("qwen3-max"), Provider::Alibaba);
+        }
+
+        #[test]
+        fn from_model_deepseek_prefix() {
+            assert_eq!(Provider::from_model("deepseek-v3"), Provider::DeepSeek);
+        }
+
+        #[test]
+        fn from_model_empty_defaults_to_anthropic() {
+            assert_eq!(Provider::from_model(""), Provider::Anthropic);
+        }
+
+        #[test]
+        fn from_model_unknown_prefix_defaults_to_anthropic() {
+            assert_eq!(Provider::from_model("llama3.3:8b"), Provider::Anthropic);
+        }
+
+        // ---- chat_completions_url ------------------------------------------
+
+        #[test]
+        fn chat_completions_url_openai_is_some_with_openai_domain() {
+            let url = Provider::OpenAI.chat_completions_url().unwrap();
+            assert!(url.contains("openai.com"), "expected openai.com in {url}");
+        }
+
+        #[test]
+        fn chat_completions_url_gemini_contains_googleapis() {
+            let url = Provider::Gemini.chat_completions_url().unwrap();
+            assert!(
+                url.contains("generativelanguage.googleapis.com"),
+                "expected googleapis domain in {url}"
+            );
+        }
+
+        #[test]
+        fn chat_completions_url_zai_contains_bigmodel() {
+            let url = Provider::Zai.chat_completions_url().unwrap();
+            assert!(url.contains("bigmodel.cn"), "expected bigmodel.cn in {url}");
+        }
+
+        #[test]
+        fn chat_completions_url_moonshot_contains_moonshot_ai() {
+            let url = Provider::Moonshot.chat_completions_url().unwrap();
+            assert!(url.contains("moonshot.ai"), "expected moonshot.ai in {url}");
+        }
+
+        #[test]
+        fn chat_completions_url_alibaba_contains_dashscope() {
+            let url = Provider::Alibaba.chat_completions_url().unwrap();
+            assert!(
+                url.contains("dashscope.aliyuncs.com"),
+                "expected dashscope.aliyuncs.com in {url}"
+            );
+        }
+
+        #[test]
+        fn chat_completions_url_deepseek_contains_deepseek_com() {
+            let url = Provider::DeepSeek.chat_completions_url().unwrap();
+            assert!(url.contains("deepseek.com"), "expected deepseek.com in {url}");
+        }
+
+        #[test]
+        fn chat_completions_url_anthropic_is_none() {
+            assert!(Provider::Anthropic.chat_completions_url().is_none());
+        }
+
+        #[test]
+        fn chat_completions_url_codex_is_none() {
+            assert!(Provider::Codex.chat_completions_url().is_none());
+        }
+
+        #[test]
+        fn chat_completions_url_ollama_is_none() {
+            assert!(Provider::Ollama.chat_completions_url().is_none());
+        }
+
+        // ---- api_key_env ---------------------------------------------------
+
+        #[test]
+        fn api_key_env_anthropic() {
+            assert_eq!(Provider::Anthropic.api_key_env(), "ANTHROPIC_API_KEY");
+        }
+
+        #[test]
+        fn api_key_env_openai() {
+            assert_eq!(Provider::OpenAI.api_key_env(), "OPENAI_API_KEY");
+        }
+
+        #[test]
+        fn api_key_env_gemini() {
+            assert_eq!(Provider::Gemini.api_key_env(), "GEMINI_API_KEY");
+        }
+
+        #[test]
+        fn api_key_env_zai() {
+            assert_eq!(Provider::Zai.api_key_env(), "ZAI_API_KEY");
+        }
+
+        #[test]
+        fn api_key_env_moonshot() {
+            assert_eq!(Provider::Moonshot.api_key_env(), "MOONSHOT_API_KEY");
+        }
+
+        #[test]
+        fn api_key_env_alibaba() {
+            assert_eq!(Provider::Alibaba.api_key_env(), "DASHSCOPE_API_KEY");
+        }
+
+        #[test]
+        fn api_key_env_deepseek() {
+            assert_eq!(Provider::DeepSeek.api_key_env(), "DEEPSEEK_API_KEY");
+        }
+
+        #[test]
+        fn api_key_env_ollama() {
+            assert_eq!(Provider::Ollama.api_key_env(), "OLLAMA_API_KEY");
+        }
+
+        #[test]
+        fn api_key_env_codex() {
+            assert_eq!(Provider::Codex.api_key_env(), "CODEX_API_KEY");
+        }
+
+        // ---- is_openai_compat ----------------------------------------------
+
+        #[test]
+        fn is_openai_compat_true_for_openai() {
+            assert!(Provider::OpenAI.is_openai_compat());
+        }
+
+        #[test]
+        fn is_openai_compat_true_for_gemini() {
+            assert!(Provider::Gemini.is_openai_compat());
+        }
+
+        #[test]
+        fn is_openai_compat_true_for_zai() {
+            assert!(Provider::Zai.is_openai_compat());
+        }
+
+        #[test]
+        fn is_openai_compat_true_for_moonshot() {
+            assert!(Provider::Moonshot.is_openai_compat());
+        }
+
+        #[test]
+        fn is_openai_compat_true_for_alibaba() {
+            assert!(Provider::Alibaba.is_openai_compat());
+        }
+
+        #[test]
+        fn is_openai_compat_true_for_deepseek() {
+            assert!(Provider::DeepSeek.is_openai_compat());
+        }
+
+        #[test]
+        fn is_openai_compat_false_for_anthropic() {
+            assert!(!Provider::Anthropic.is_openai_compat());
+        }
+
+        #[test]
+        fn is_openai_compat_false_for_codex() {
+            assert!(!Provider::Codex.is_openai_compat());
+        }
+
+        #[test]
+        fn is_openai_compat_false_for_ollama() {
+            assert!(!Provider::Ollama.is_openai_compat());
         }
     }
 }
