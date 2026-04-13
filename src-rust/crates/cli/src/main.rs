@@ -156,9 +156,17 @@ struct Cli {
     #[arg(long = "verbose", short = 'v', action = ArgAction::SetTrue)]
     verbose: bool,
 
-    /// API key (overrides ANTHROPIC_API_KEY env var)
+    /// API key (overrides the provider-specific env var, e.g. ANTHROPIC_API_KEY,
+    /// OPENAI_API_KEY, GEMINI_API_KEY, ZAI_API_KEY, MOONSHOT_API_KEY,
+    /// DASHSCOPE_API_KEY, DEEPSEEK_API_KEY)
     #[arg(long = "api-key")]
     api_key: Option<String>,
+
+    /// Provider to use. One of: anthropic, openai, gemini, zai (GLM),
+    /// moonshot (Kimi), alibaba (Qwen), deepseek, ollama, codex.
+    /// If omitted, auto-detected from --model prefix.
+    #[arg(long = "provider")]
+    provider: Option<String>,
 
     /// Maximum tokens per response
     #[arg(long = "max-tokens")]
@@ -473,30 +481,66 @@ async fn main() -> anyhow::Result<()> {
     // Determine mode early (needed for auth error handling and permission handler selection).
     let is_headless = cli.print || cli.prompt.is_some();
 
+    // Resolve the provider: explicit --provider flag wins, otherwise
+    // auto-detect from the model prefix (claude-*, gpt-*, gemini-*, glm-*,
+    // kimi-*, qwen-*, deepseek-*). Ollama is opt-in via OLLAMA_ENDPOINT.
+    let provider = if let Some(name) = cli.provider.as_deref() {
+        claurst_api::client::Provider::parse_name(name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unknown --provider '{}'. Valid: anthropic, openai, gemini, zai, moonshot, alibaba, deepseek, ollama, codex.",
+                name
+            )
+        })?
+    } else if std::env::var("OLLAMA_ENDPOINT").is_ok() && cli.provider.is_none() {
+        claurst_api::client::Provider::Ollama
+    } else {
+        claurst_api::client::Provider::from_model(config.model.as_deref().unwrap_or(""))
+    };
+
     // Initialize API client.
-    // Try config/env first; fall back to saved OAuth tokens; finally prompt for login.
-    let (api_key, use_bearer_auth) = match config.resolve_auth_async().await {
-        Some(auth) => auth,
-        None => {
-            // No credential found — run interactive OAuth login (non-headless) or error.
-            if is_headless {
-                anyhow::bail!(
-                    "No API key found. Set ANTHROPIC_API_KEY, use --api-key, or run `claude login`."
-                );
+    // For Anthropic: try config/env, fall back to saved OAuth tokens, else prompt login.
+    // For other providers: API key only (from --api-key or the provider-specific env var).
+    let (api_key, use_bearer_auth) = if provider == claurst_api::client::Provider::Anthropic {
+        match config.resolve_auth_async().await {
+            Some(auth) => auth,
+            None => {
+                if is_headless {
+                    anyhow::bail!(
+                        "No API key found. Set ANTHROPIC_API_KEY, use --api-key, or run `claurst login`."
+                    );
+                }
+                eprintln!("No authentication found. Starting login flow...");
+                let result = oauth_flow::run_oauth_login_flow(true)
+                    .await
+                    .context("Login failed")?;
+                println!("Login successful!");
+                (result.credential, result.use_bearer_auth)
             }
-            eprintln!("No authentication found. Starting login flow...");
-            let result = oauth_flow::run_oauth_login_flow(true)
-                .await
-                .context("Login failed")?;
-            println!("Login successful!");
-            (result.credential, result.use_bearer_auth)
         }
+    } else if provider == claurst_api::client::Provider::Ollama {
+        // Ollama runs locally, no key required.
+        (String::new(), false)
+    } else {
+        let env_var = provider.api_key_env();
+        let key = cli
+            .api_key
+            .clone()
+            .or_else(|| std::env::var(env_var).ok().filter(|k| !k.is_empty()))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No {} API key found. Set {} or pass --api-key.",
+                    provider.name(),
+                    env_var,
+                )
+            })?;
+        (key, false)
     };
 
     let client_config = claurst_api::client::ClientConfig {
         api_key: api_key.clone(),
         api_base: config.resolve_api_base(),
         use_bearer_auth,
+        provider,
         ..Default::default()
     };
     let client = Arc::new(
