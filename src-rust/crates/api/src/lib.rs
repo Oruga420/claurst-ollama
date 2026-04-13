@@ -328,6 +328,7 @@ pub struct AvailableModel {
 // ---------------------------------------------------------------------------
 pub mod client {
     use super::*;
+    use crate::streaming::ContentDelta;
 
     /// Provider selection for API calls.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -721,13 +722,11 @@ pub mod client {
             mut request: CreateMessageRequest,
             handler: Arc<dyn StreamHandler>,
         ) -> Result<mpsc::Receiver<StreamEvent>, ClaudeError> {
-            // Only Anthropic supports streaming at the moment. All other
-            // providers fall back to non-streaming via create_message().
+            // Non-Anthropic providers don't have native streaming. Synthesize
+            // a stream from a single non-streaming response so the rest of the
+            // agent loop doesn't need special-casing.
             if self.config.provider != Provider::Anthropic {
-                return Err(ClaudeError::Other(format!(
-                    "{} provider does not support streaming yet — use non-streaming mode",
-                    self.config.provider.name()
-                )));
+                return self.synthesize_stream(request, handler).await;
             }
 
             request.stream = true;
@@ -755,6 +754,119 @@ pub mod client {
                 }
             });
 
+            Ok(rx)
+        }
+
+        /// Fake a streaming response by calling create_message() and emitting
+        /// the result as a single burst of stream events. Used for providers
+        /// that don't support SSE (OpenAI-compat + Ollama + Codex).
+        async fn synthesize_stream(
+            &self,
+            mut request: CreateMessageRequest,
+            handler: Arc<dyn StreamHandler>,
+        ) -> Result<mpsc::Receiver<StreamEvent>, ClaudeError> {
+            // Force non-streaming: upstream sets stream=true but the
+            // OpenAI-compat path expects a single JSON body, not SSE.
+            request.stream = false;
+            let response = self.create_message(request).await?;
+            let (tx, rx) = mpsc::channel(64);
+
+            let emit = |ev: StreamEvent,
+                        handler: &Arc<dyn StreamHandler>,
+                        tx: &mpsc::Sender<StreamEvent>| {
+                handler.on_event(&ev);
+                let _ = tx.try_send(ev);
+            };
+
+            emit(
+                StreamEvent::MessageStart {
+                    id: response.id.clone(),
+                    model: response.model.clone(),
+                    usage: response.usage.clone(),
+                },
+                &handler,
+                &tx,
+            );
+
+            for (index, block) in response.content.iter().enumerate() {
+                let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("text");
+                match block_type {
+                    "text" => {
+                        let text = block
+                            .get("text")
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        emit(
+                            StreamEvent::ContentBlockStart {
+                                index,
+                                content_block: ContentBlock::Text { text: String::new() },
+                            },
+                            &handler,
+                            &tx,
+                        );
+                        emit(
+                            StreamEvent::ContentBlockDelta {
+                                index,
+                                delta: ContentDelta::TextDelta { text },
+                            },
+                            &handler,
+                            &tx,
+                        );
+                        emit(StreamEvent::ContentBlockStop { index }, &handler, &tx);
+                    }
+                    "tool_use" => {
+                        let id = block
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let name = block
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let input = block.get("input").cloned().unwrap_or(Value::Null);
+                        let partial_json = serde_json::to_string(&input).unwrap_or_default();
+                        emit(
+                            StreamEvent::ContentBlockStart {
+                                index,
+                                content_block: ContentBlock::ToolUse {
+                                    id,
+                                    name,
+                                    input: Value::Null,
+                                },
+                            },
+                            &handler,
+                            &tx,
+                        );
+                        emit(
+                            StreamEvent::ContentBlockDelta {
+                                index,
+                                delta: ContentDelta::InputJsonDelta { partial_json },
+                            },
+                            &handler,
+                            &tx,
+                        );
+                        emit(StreamEvent::ContentBlockStop { index }, &handler, &tx);
+                    }
+                    _ => {
+                        // Unknown block type — skip it but keep the indices.
+                    }
+                }
+            }
+
+            emit(
+                StreamEvent::MessageDelta {
+                    stop_reason: response.stop_reason.clone(),
+                    usage: Some(response.usage.clone()),
+                },
+                &handler,
+                &tx,
+            );
+            emit(StreamEvent::MessageStop, &handler, &tx);
+
+            drop(tx);
             Ok(rx)
         }
 
